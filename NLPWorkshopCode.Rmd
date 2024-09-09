@@ -1,0 +1,549 @@
+---
+title: "NLPWorkshop_Hills"
+author: "Thomas T. Hills"
+output: html_document
+date: "2024-09-03"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r installlibraries}
+library(readr)
+library(rstudioapi)
+library(tidyverse)
+library(tidytext)
+library(wordcloud)
+library(wordcloud2)
+library(quanteda)
+library(zoo) # rollapply
+library(tm)
+library(lsa)
+library(LDAvis)
+library(topicmodels)
+```
+
+```{r datahygeine}
+rm(list=ls())
+```
+
+# Read in txt files
+
+```{r}
+# select input directory with text files
+input_directory <- selectDirectory()
+
+# Alternatively, you can set the directory
+# input_directory = './NLPWorkshopData/text_files'   # set sets the path directory to our text files
+
+# get list of files in directory
+filesList<- list.files(input_directory)
+
+filesList
+
+documentVector <- c()
+
+for(i in 1:length(filesList)){
+ # classData <- read.csv(paste(input_directory, "/",fileToRead, sep=""), header = T)
+  rd <- read_lines(file=paste(input_directory, "/", filesList[i],sep=""))
+  rd2 <- paste(rd, sep =" ", collapse = " ")
+  documentVector <- c(documentVector, rd2)
+}
+
+# make into a data frame
+dv <- tibble(docnum = 1:length(documentVector), docName = filesList, text = documentVector)
+
+# Note: we could read in a csv file and label it as above to achieve the same thing if we had a data file with a document in each row
+```
+
+# Preprocessing
+
+```{r preprocessing}
+# Change encoding to convert non-ascii characters to ascii (ü -> u)
+# you'll want to do this to norms to if needed
+  dv$text <- iconv(dv$text, from = "UTF-8", to = "ASCII", sub = "")
+    #### clean data file
+  dv$text <- iconv(dv$text, "latin1", "ASCII", sub="") # remove non-asci characters
+  dv$text <- gsub("[[:punct:]]","",dv$text) # remove all puncutation
+  dv$text <- gsub('[[:digit:]]+', "", dv$text) # removes digits
+  dv$text <- tolower(dv$text) # make it all lower case
+ 
+```
+
+# Word counting
+
+## unnest tokens
+
+```{r unnest}
+dvun <- dv %>% unnest_tokens(word, text)
+```
+
+## Finding words
+
+```{r searchForWords}
+"cheshire" %in% dvun$word
+"hatter" %in% dvun$word
+"snake" %in% dvun$word
+"caterpillar" %in% dvun$word
+```
+
+## Word frequency
+
+```{r countwords}
+dvun %>% dplyr::count(word, sort=TRUE) 
+FreqCount <- dvun %>% count(word, sort=TRUE) 
+
+dvun %>% dplyr::count(word, sort=TRUE) %>% dplyr::arrange(-dplyr::row_number())
+
+```
+
+## Remove stopwords
+
+```{r stopwords}
+data('stop_words') 
+
+dvNoStops <- dvun %>% anti_join(subset(stop_words, lexicon == "snowball")) # this limits stopwords to snowball stopwords
+```
+
+## Stemming
+
+```{r stemming}
+text <- "love loving lovingly Loved lover lovely love"
+text <- tibble(text=text)
+text <- text %>% unnest_tokens(word, text)
+
+text %>%
+  mutate(word = wordStem(word))
+
+dvNoStopsStemmed <- dvNoStops %>%
+  mutate(word_stem = wordStem(word))
+
+```
+
+## Wordclouds
+
+```{r wordclouds}
+dvun %>%
+  dplyr::count(word, sort = TRUE) %>%
+  with(wordcloud(word, n, max.words = 10, colors=brewer.pal(8, "Dark2")))
+
+dvNoStops %>%
+  anti_join(stop_words) %>%
+  dplyr::count(word, sort = TRUE) %>%
+  with(wordcloud(word, n, max.words = 20, colors=brewer.pal(8, "Dark2")))
+
+```
+
+## Concordances
+
+```{r concordances}
+library(quanteda)
+dvt <- quanteda::tokens(dv$text,
+            remove_punct = T, remove_symbols = T)
+quanteda::kwic(dvt, pattern = "queen", window = 3)
+# to find a phrase
+quanteda::kwic(dvt, pattern =  phrase("mock turtle"), window = 3)
+quanteda::kwic(dvt, pattern =  phrase("freedom"), window = 3)
+
+```
+
+## Bigrams
+
+```{r bigrams}
+dvBigrams <- dv %>%
+  unnest_tokens(bigram, text, token = "ngrams", n = 2) # n = 2 means we want 2-grams
+
+bigramsSplit <- dvBigrams %>%
+  separate(bigram, c("word1", "word2"), sep = " ")
+
+bigrams_filtered <- bigramsSplit %>% # take out all bigrams with stopwords
+  filter(!word1 %in% stop_words$word) %>%
+  filter(!word2 %in% stop_words$word)
+
+bigrams_united <- bigrams_filtered %>% # reunite the bigrams
+  unite(bigram, word1, word2, sep = " ")
+
+bigram_counts <- bigrams_united %>%
+  dplyr::group_by(docName) %>%
+  dplyr::count(bigram, sort = TRUE)
+
+
+# First, filter out bigrams that occur only once
+bisgt1 <- bigram_counts %>%
+  filter(n > 1)
+
+df_top10 <- bisgt1 %>%
+  group_by(docName) %>%
+  top_n(10, n) %>%
+  ungroup()
+
+df_top10 %>%
+  filter(bigram != "NA NA") %>%
+  #mutate(bigram= factor(bigram, levels = rev(unique(bigram)))) %>% 
+  group_by(docName) %>% 
+  top_n(10) %>% 
+  ungroup() %>%
+  ggplot(aes(reorder(bigram,n), n, fill = docName)) +
+  geom_col(show.legend = FALSE) +
+  labs(x = NULL, y = "count") +
+  facet_wrap(~docName, ncol = 2, scales = "free") +
+  coord_flip()
+
+```
+
+# Regular expression to combine names
+
+```{r}
+# gsub finds one pattern and replaces it with another
+text_mock_turtle <- gsub("mock turtle", "mock_turtle", dv$text)
+
+dvt <- quanteda::tokens(dv$text, remove_punct = T, remove_symbols = T)
+dvsub <- quanteda::tokens(text_mock_turtle, remove_punct = T, remove_symbols = T)
+quanteda::kwic(dvt, pattern = phrase("mock turtle"), window = 3)
+quanteda::kwic(dvsub, pattern = phrase("mock_turtle"), window = 3)
+quanteda::kwic(dvsub, pattern = phrase("mock turtle"), window = 3)
+
+```
+
+# Feature analysis (sentiment)
+
+```{r sentiment_analysis}
+# get norms
+
+vad <- read.csv("NLPWorkshopData/norms/vadNorms.csv")
+vad <- tibble(vad)
+
+# left_join with text file
+vaddvun <- dvun %>% left_join(vad)
+
+# what are the most negative words 
+vaddvun %>% arrange(valence)
+
+# what are the most positive words
+vaddvun %>% arrange(desc(valence))
+
+# what's the mean valence for all documents?
+vaddvun %>% summarise(mean(valence, na.rm=T))
+
+vaddvun %>%  group_by(docName) %>% summarise(valence = mean(valence, na.rm=T))
+```
+
+## Feature analysis (multiple documents and output) for all norms in norm folder
+
+```{r featureMultiple}
+
+
+
+###### first we'll read in the norms: we'll compute these for each text
+###### if you want to add new norms, just add them to the `norms` folder (properly formatted with `word` and `ratingName`)
+
+normsFiles <- list.files('NLPWorkshopData/norms/')
+length(normsFiles)
+normF <- NULL
+for(i in 1:length(normsFiles)){
+  normF[[i]] <- read.csv(paste("NLPWorkshopData/norms/", normsFiles[i],sep=""))
+}
+
+# join all norms
+docRatings <- dvun 
+for(i in 1:length(normF)) {
+   docRatings <- docRatings %>% left_join(normF[[i]], by = "word")
+}
+
+# Loop through all docs and compute stats for each 
+# Because I don't trust group_by I use a for loop
+docs <- unique(docRatings$docName)
+dataout <- c()
+for(i in 1:length(docs)){
+  buf <- subset(docRatings, docName == docs[i])
+  tokenn <- nrow(buf) 
+  typesn <- length(unique(buf$word))
+  TTR <- typesn/tokenn
+  # what's the mean of the values for this document
+  values <- names(docRatings)[4:length(names(docRatings))]
+  dataVector <- buf %>% summarise_at(values, mean,na.rm=T)
+  dataVector <- data.frame(filename = docs[i], dataVector, tokens = tokenn, types=typesn, TTR=TTR)
+  dataout <- rbind(dataout, dataVector)
+}
+
+write.table(dataout, "output.txt", quote = FALSE, row.names = FALSE)
+
+with(dataout, plot(ageOfAcquisition, concreteness))
+with(dataout, text(ageOfAcquisition, concreteness+.03, labels=filename, cex = .5))
+
+```
+
+### Moving Window
+
+We using a *moving window* to see when things turn up or down. A *window* simply refers to a set of data we will look at together as a kind of chunk or bin. But with a moving window, we move the window over one item, and compute again, and do this repeatedly across the document one word at a time. This smooths out the data by moving the window--one word at a time-- over the text.
+
+`rollapply` makes this incredibly easy to do as. It simply takes a vector and computes a value for each row in the vector based on the values above and below that row. It has a variety of parameters to handle the two ends of the document as well as other decisions. You can learn more about these by looking at `?rollapply`.
+
+```{r}
+
+# lets focus on a specific document
+alice <- docRatings[docRatings$docName=="AlicesAdventuresInWonderland_symbols.txt",]
+# make line numbers
+alice <- tibble(line=1:nrow(alice), alice)
+# set windowsize 
+windowSize = 500
+
+windowValue <- rollapply(alice$valence, windowSize, FUN = "mean",align="center", na.rm=T, partial = TRUE)
+
+rollingAlice <- alice %>% mutate(windowValue)
+
+with(rollingAlice, plot(line, windowValue, cex = .2, pch=16, xlab = "Word in Alice", ylab = "Valence"))
+
+```
+
+Try adjusting the `windowSize` in the above code to see what it does. I've created a simple tool called [textsight](https://warwick.ac.uk/fac/sci/psych/people/thills/thills/textsight/) where you can investigate this further. You can also upload your own documents there and mouse-over to read individual parts of the text and quickly visualize documents, like reviewer's comments to determine which reviewer is in fact the most evil. Using other tools here you could probably determine when you're dealing with the same reviewer.
+
+
+# Semantics
+
+
+## LSA
+
+```{r}
+
+# Clean the text a bit before making the corpus
+for(i in 1:nrow(dv)){
+  dv$text[i] <- iconv(dv$text[i], from = "UTF-8", to = "ASCII", sub = "")
+  # add in lines to remove numbers
+}
+
+# try again with corpus
+corpus <- Corpus(VectorSource(dv$text))
+
+# Preprocess the text (gives warnings, but they are not relevant here)
+corpus <- tm_map(corpus, content_transformer(tolower))
+corpus <- tm_map(corpus, removePunctuation)
+corpus <- tm_map(corpus, removeNumbers)
+corpus <- tm_map(corpus, removeWords, stopwords("en"))
+corpus <- tm_map(corpus, stripWhitespace)
+
+# Create a Term-Document Matrix
+tdm <- TermDocumentMatrix(corpus)
+
+# Inspect the Term-Document Matrix
+inspect(tdm)
+
+dim(tdm)
+
+tdm$dimnames$Docs <- dv$docName
+
+termcount <-apply(tdm,1,sum)
+doccount <- apply(tdm, 2, sum)
+
+# this needs to be a matrix (which isn't made automatically above)
+TDM <- as.matrix(tdm)
+
+TDM2 <- lw_tf(TDM) * gw_idf(TDM)
+
+LSAout <- lsa(TDM2, dims=dimcalc_share())
+#dimcalc_share() computes a 'recommended' number of dimensions from the data. You could choose this by hand.  
+
+head(LSAout$dk)  # the document matrix
+head(LSAout$tk)  # the term matrix
+head(LSAout$sk)  # the diagonal matrix
+
+myDocs <- rownames(LSAout$dk) 
+head(myDocs)
+myTerms <- rownames(LSAout$tk) 
+head(myTerms)
+
+termd = (LSAout$sk * t(LSAout$tk))
+termd[1:5, 1:5]
+#termd = (LSAout$tk * LSAout$sk)
+#termd[1:5, 1:5]
+
+cosine_terms <- cosine(termd) # this takes some time 
+
+# see top 10
+cosine_terms[1:10,1:10]
+
+wtf <- "america"
+cosine_terms[wtf,order(cosine_terms[wtf,], decreasing=T)][1:10]
+
+# the same for documents
+docd = (LSAout$sk * t(LSAout$dk))
+
+cosine_docs <- cosine(docd)
+
+cosine_docs[1:5, 1:5]
+
+wtf <- "1957-Eisenhower.txt"
+cosine_docs[wtf,order(cosine_docs[wtf,], decreasing=T)][1:10]
+
+```
+
+Finally, we can visualize all of this, to see how similar documents are to one another in a visual way. This uses multi-dimensional scaling, which embeds many dimensions into a two dimensional space, allowing us to plot them.
+
+```{r}
+# MDS to visualize similarities
+d <- dist(cosine_docs) # euclidean distances between the rows
+fit <- cmdscale(d,eig=TRUE, k=2) # k is the number of dim
+fit$points # view results
+
+# plot solution 
+x <- fit$points[,1]
+y <- fit$points[,2]
+plot(x, y, xlab="Coordinate 1", ylab="Coordinate 2", 
+     main="Metric MDS", type="n")
+text(x, y, labels = row.names(cosine_docs), cex=.5)
+
+```
+
+Lovely.
+
+
+# LDA  Topics Analysis
+
+```{r LDA}
+
+allFiles <- dvun 
+
+
+
+word_counts <- allFiles %>%
+  anti_join(stop_words) %>%
+  dplyr::count(docName, word, sort = TRUE) 
+
+# the method we use here expects to receive a count for each term in each document
+# cast into a term-document-matrix --> a different method from before, but does the same thing
+addresses_dtm <- word_counts %>%
+  cast_dtm(docName, word, n)
+
+addresses_dtm
+
+k = 13 # Number of topics 
+
+addresses_lda <- LDA(addresses_dtm, k = k, control = list(seed = 1, alpha = .1 ))
+
+ad_topics <- tidy(addresses_lda, matrix = "beta") # Note that with k = k topics we have k * the number of terms in the dtm
+
+# show most probable terms
+terms(addresses_lda, k, threshold= 0)
+
+ad_top_terms <- ad_topics %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>% # Take Top 10 terms
+  ungroup() %>%
+  arrange(topic, -beta)
+
+
+ad_top_terms %>%
+  mutate(term = reorder_within(term, beta, topic)) %>% # order within topics
+  ggplot(aes(term, beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip() +
+  scale_x_reordered()
+
+
+
+## compute LIFT
+
+ad_lift <- ad_topics %>% group_by(term) %>%
+  mutate(term_topic_prob = beta / sum(beta,na.rm=T))
+  # we divide by the sum of the Betas for the term across topics
+  
+
+ad_top_lift <- ad_lift %>%
+  group_by(topic) %>%
+  top_n(10, term_topic_prob) %>%
+  sample_n(10) %>%
+  ungroup() %>%
+  arrange(topic, -term_topic_prob)
+
+
+ad_top_lift %>% 
+  mutate(term = reorder_within(term, term_topic_prob, topic)) %>%
+  ggplot(aes(term, term_topic_prob, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip() +
+  scale_x_reordered()
+
+# Relevance (from Sievert and Shirley)
+
+lambda = .6 # this tunes between raw beta (=1) and lift (=0)
+
+ad_rel <- ad_topics %>% group_by(term) %>%
+  mutate(relevance = lambda* log(beta) + (1-lambda)* log(beta / sum(beta,na.rm=T)) )
+  
+
+ad_top_rel <- ad_rel %>%
+  group_by(topic) %>%
+  top_n(10, relevance) %>%
+  sample_n(10) %>%
+  ungroup() %>%
+  arrange(topic, -relevance)
+
+ad_top_rel2 <- ad_rel %>%
+  group_by(topic) %>%
+  top_n(10, relevance) %>%
+  ungroup() %>%
+  arrange(topic, -relevance)
+
+
+ad_top_rel %>% 
+  mutate(term = reorder_within(term, relevance, topic)) %>%
+  ggplot(aes(term, relevance, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip() +
+  scale_x_reordered()
+
+
+# this allows you to look at topic 1 lift values
+ad_top_lift %>% filter(topic == 1)
+ad_top_lift %>% filter(topic == 2)
+
+ldaOut <- addresses_lda
+
+# Gamma gives the topic probability for each document
+adGamm <- tidy(ldaOut, matrix = "gamma")
+adGamm
+
+adGamm <- adGamm %>%
+  separate(document, c("year", "president"), sep = "-", convert = TRUE)
+
+adGamm
+
+adGamm %>%
+ggplot(aes(year, gamma, group = factor(topic))) +
+        geom_smooth(aes(color = factor(topic)),se=F, span = .3)
+        
+ldaOut.topics <- as.matrix(topics(ldaOut))
+
+
+# write.csv(ldaOut.topics,file=paste("topic_model",k,"DocsToTopics.csv"))
+
+ldaOut.terms <- as.matrix(terms(ldaOut,6))
+ldaOut.terms[1:6,]
+
+
+topicmodels2LDAvis <- function(x, ...){
+  post <- topicmodels::posterior(x)
+  if (ncol(post[["topics"]]) < 3) stop("The model must contain > 2 topics")
+  mat <- x@wordassignments
+  LDAvis::createJSON(
+    phi = post[["terms"]], 
+    theta = post[["topics"]],
+    vocab = colnames(post[["terms"]]),
+    doc.length = slam::row_sums(mat, na.rm = TRUE),
+    term.frequency = slam::col_sums(mat, na.rm = TRUE)
+  )
+}
+
+#
+serVis(topicmodels2LDAvis(ldaOut))
+
+dir_name  = paste('result_lda/LDA_k=', k, sep='')
+
+#serVis(topicmodels2LDAvis(ldaOut), out.dir = dir_name, open.browser = TRUE) ## the output explains what location to find the visualization at.  You may need to copy and paste that into your web browser. It starts with `http://`.
+
+
+```
