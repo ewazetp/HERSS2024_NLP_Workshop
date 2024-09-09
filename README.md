@@ -1,5 +1,7 @@
 # NLP Workshop
 
+## Thomas T. Hills
+
 This repository provides materials for my Natural Language Processing workshop.  
 
 You will find:
