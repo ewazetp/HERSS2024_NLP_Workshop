@@ -104,6 +104,8 @@ dvun %>% dplyr::count(word, sort=TRUE) %>% dplyr::arrange(-dplyr::row_number())
 data('stop_words') 
 
 dvNoStops <- dvun %>% anti_join(subset(stop_words, lexicon == "snowball")) # this limits stopwords to snowball stopwords
+
+dvNoStops %>% dplyr::count(word, sort = TRUE)
 ```
 
 ## Stemming
@@ -269,7 +271,8 @@ for(i in 1:length(docs)){
 
 write.table(dataout, "output.txt", quote = FALSE, row.names = FALSE)
 
-with(dataout, plot(ageOfAcquisition, concreteness))
+
+with(dataout, plot(ageOfAcquisition, concreteness, ylim = c(2.2, 2.6), xlim = c(4.6, 6)))
 with(dataout, text(ageOfAcquisition, concreteness+.03, labels=filename, cex = .5))
 
 ```
@@ -405,7 +408,7 @@ Lovely.
 allFiles <- dvun 
 
 
-
+# prepare for a document term matrix
 word_counts <- allFiles %>%
   anti_join(stop_words) %>%
   dplyr::count(docName, word, sort = TRUE) 
